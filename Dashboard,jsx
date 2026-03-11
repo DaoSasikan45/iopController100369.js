@@ -1,0 +1,585 @@
+//แดชบอร์ดก่อนลบการ์ดเพิ่มผู้ป่วย
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
+import { authService, notificationService } from '../services/api';
+import {
+  LayoutGrid,
+  Users,
+  Calendar,
+  FileText,
+  Settings,
+  LogOut,
+  Menu,
+  X,
+  Bell,
+  User,
+  AlertCircle,
+  CheckCircle,
+  Info,
+  AlertTriangle,
+  Check,
+  RefreshCw,
+} from 'lucide-react';
+import './DashboardLayout.css';
+
+// ============================================================
+// Notification Dropdown Component
+// ============================================================
+function NotificationDropdown({ doctorId, onClose, onCountChange }) {
+  const [notifications, setNotifications] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [markingAll, setMarkingAll] = useState(false);
+
+  const fetchNotifications = useCallback(async () => {
+    if (!doctorId) return;
+    try {
+      setLoading(true);
+      const res = await notificationService.getDoctorNotifications(doctorId, {
+        is_read: 'all',
+        limit: 20,
+      });
+      const list =
+        res?.data?.notifications ||
+        res?.data?.data?.notifications ||
+        [];
+      setNotifications(Array.isArray(list) ? list : []);
+    } catch (err) {
+      console.error('Failed to fetch notifications:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [doctorId]);
+
+  useEffect(() => {
+    fetchNotifications();
+  }, [fetchNotifications]);
+
+  const handleMarkAsRead = async (notificationId) => {
+    try {
+      await notificationService.markAsRead(notificationId);
+      setNotifications((prev) =>
+        prev.map((n) =>
+          n.notification_id === notificationId ? { ...n, is_read: true } : n
+        )
+      );
+      // อัปเดต badge count
+      const unread = notifications.filter(
+        (n) => !n.is_read && n.notification_id !== notificationId
+      ).length;
+      onCountChange(unread);
+    } catch (err) {
+      console.error('Failed to mark as read:', err);
+    }
+  };
+
+  const handleMarkAllAsRead = async () => {
+    const unreadList = notifications.filter((n) => !n.is_read);
+    if (unreadList.length === 0) return;
+    try {
+      setMarkingAll(true);
+      await Promise.all(
+        unreadList.map((n) => notificationService.markAsRead(n.notification_id))
+      );
+      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+      onCountChange(0);
+    } catch (err) {
+      console.error('Failed to mark all as read:', err);
+    } finally {
+      setMarkingAll(false);
+    }
+  };
+
+  const getPriorityIcon = (priority) => {
+    const level = typeof priority === 'object' ? priority?.level : priority;
+    switch (level) {
+      case 'urgent': return <AlertCircle size={16} color="#ef4444" />;
+      case 'high':   return <AlertTriangle size={16} color="#f97316" />;
+      case 'medium': return <Info size={16} color="#eab308" />;
+      default:       return <CheckCircle size={16} color="#22c55e" />;
+    }
+  };
+
+  const getPriorityLabel = (priority) => {
+    const level = typeof priority === 'object' ? priority?.level : priority;
+    const map = { urgent: 'เร่งด่วน', high: 'สำคัญ', medium: 'ปานกลาง', low: 'ทั่วไป' };
+    return map[level] || level;
+  };
+
+  const getPriorityColor = (priority) => {
+    const level = typeof priority === 'object' ? priority?.level : priority;
+    const map = {
+      urgent: '#fef2f2',
+      high:   '#fff7ed',
+      medium: '#fefce8',
+      low:    '#f0fdf4',
+    };
+    return map[level] || '#f9fafb';
+  };
+
+  const formatTimeAgo = (createdAt) => {
+    if (!createdAt) return '';
+    const diff = Date.now() - new Date(createdAt).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'เมื่อกี้';
+    if (mins < 60) return `${mins} นาทีที่แล้ว`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs} ชั่วโมงที่แล้ว`;
+    return `${Math.floor(hrs / 24)} วันที่แล้ว`;
+  };
+
+  const unreadCount = notifications.filter((n) => !n.is_read).length;
+
+  return (
+    <div style={styles.dropdown}>
+      {/* Header */}
+      <div style={styles.dropdownHeader}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <Bell size={18} color="#374151" />
+          <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#111827' }}>
+            การแจ้งเตือน
+          </span>
+          {unreadCount > 0 && (
+            <span style={styles.unreadBadge}>{unreadCount}</span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+          {unreadCount > 0 && (
+            <button
+              onClick={handleMarkAllAsRead}
+              disabled={markingAll}
+              style={styles.markAllBtn}
+              title="ทำเครื่องหมายอ่านทั้งหมด"
+            >
+              <Check size={14} />
+              {markingAll ? 'กำลังอัปเดต...' : 'อ่านทั้งหมด'}
+            </button>
+          )}
+          <button
+            onClick={fetchNotifications}
+            style={{ ...styles.markAllBtn, minWidth: 0, padding: '0.3rem' }}
+            title="รีเฟรช"
+          >
+            <RefreshCw size={14} />
+          </button>
+          <button onClick={onClose} style={styles.closeBtn}>
+            <X size={16} />
+          </button>
+        </div>
+      </div>
+
+      {/* List */}
+      <div style={styles.notifList}>
+        {loading ? (
+          <div style={styles.emptyState}>
+            <div style={styles.spinner} />
+            <span style={{ color: '#9ca3af', fontSize: '0.875rem' }}>กำลังโหลด...</span>
+          </div>
+        ) : notifications.length === 0 ? (
+          <div style={styles.emptyState}>
+            <Bell size={36} color="#d1d5db" />
+            <span style={{ color: '#9ca3af', fontSize: '0.875rem', marginTop: '0.5rem' }}>
+              ไม่มีการแจ้งเตือน
+            </span>
+          </div>
+        ) : (
+          notifications.map((notif) => (
+            <div
+              key={notif.notification_id}
+              style={{
+                ...styles.notifItem,
+                background: notif.is_read ? '#fff' : getPriorityColor(notif.priority),
+                borderLeft: notif.is_read
+                  ? '3px solid transparent'
+                  : `3px solid ${
+                      notif.priority?.level === 'urgent' || notif.priority === 'urgent'
+                        ? '#ef4444'
+                        : notif.priority?.level === 'high' || notif.priority === 'high'
+                        ? '#f97316'
+                        : notif.priority?.level === 'medium' || notif.priority === 'medium'
+                        ? '#eab308'
+                        : '#22c55e'
+                    }`,
+              }}
+            >
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                <div style={{ marginTop: '2px', flexShrink: 0 }}>
+                  {getPriorityIcon(notif.priority)}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+                    <p style={{
+                      fontWeight: notif.is_read ? 500 : 700,
+                      fontSize: '0.875rem',
+                      color: '#111827',
+                      margin: 0,
+                      lineHeight: 1.4,
+                    }}>
+                      {notif.title}
+                    </p>
+                    {!notif.is_read && (
+                      <button
+                        onClick={() => handleMarkAsRead(notif.notification_id)}
+                        style={styles.readBtn}
+                        title="ทำเครื่องหมายว่าอ่านแล้ว"
+                      >
+                        <Check size={12} />
+                      </button>
+                    )}
+                  </div>
+                  <p style={{
+                    fontSize: '0.8rem',
+                    color: '#6b7280',
+                    margin: '0.25rem 0 0',
+                    lineHeight: 1.5,
+                    wordBreak: 'break-word',
+                  }}>
+                    {notif.body}
+                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.4rem' }}>
+                    <span style={{
+                      fontSize: '0.7rem',
+                      padding: '0.15rem 0.5rem',
+                      borderRadius: '999px',
+                      background: '#f3f4f6',
+                      color: '#6b7280',
+                      fontWeight: 500,
+                    }}>
+                      {getPriorityLabel(notif.priority)}
+                    </span>
+                    <span style={{ fontSize: '0.72rem', color: '#9ca3af' }}>
+                      {formatTimeAgo(notif.created_at)}
+                    </span>
+                    {notif.is_read && (
+                      <span style={{ fontSize: '0.72rem', color: '#22c55e' }}>✓ อ่านแล้ว</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Main DashboardLayout
+// ============================================================
+export default function DashboardLayout() {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notificationCount, setNotificationCount] = useState(0);
+
+  const navigate = useNavigate();
+  const location = useLocation();
+  const notifRef = useRef(null);
+
+  const doctor = authService.getCurrentDoctor();
+
+  const handleLogout = () => {
+    authService.logout();
+    navigate('/login');
+  };
+
+  // ดึงจำนวน unread ทุก 30 วินาที
+  useEffect(() => {
+    const fetchCount = async () => {
+      try {
+        const response = await notificationService.getUnreadCount();
+        setNotificationCount(response.data?.unread_count || 0);
+      } catch (error) {
+        console.error('Error fetching notification count:', error);
+      }
+    };
+    fetchCount();
+    const interval = setInterval(fetchCount, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ปิด dropdown เมื่อคลิกนอก
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) {
+        setNotifOpen(false);
+      }
+    };
+    if (notifOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [notifOpen]);
+
+  const navItems = [
+    { path: '/dashboard',    icon: LayoutGrid, label: 'แดชบอร์ด' },
+    { path: '/patients',     icon: Users,      label: 'ผู้ป่วย' },
+    { path: '/appointments', icon: Calendar,   label: 'นัดหมาย' },
+    { path: '/reports',      icon: FileText,   label: 'รายงาน' },
+  ];
+
+  return (
+    <div className="dashboard-layout">
+      {/* Sidebar */}
+      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
+        <div className="sidebar-header">
+          <div className="logo">
+            <LayoutGrid size={24} />
+            <span>EyeMate</span>
+          </div>
+          <button className="close-sidebar" onClick={() => setSidebarOpen(false)}>
+            <X size={20} />
+          </button>
+        </div>
+
+        <nav className="sidebar-nav">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                className={`nav-item ${location.pathname === item.path ? 'active' : ''}`}
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Icon size={20} />
+                <span>{item.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+
+        <div className="sidebar-footer">
+          <Link to="/settings" className="nav-item">
+            <Settings size={20} />
+            <span>ตั้งค่า</span>
+          </Link>
+        </div>
+      </aside>
+
+      {/* Sidebar Overlay */}
+      {sidebarOpen && (
+        <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
+      )}
+
+      {/* Main Content */}
+      <div className="main-content">
+        {/* Top Bar */}
+        <header className="top-bar">
+          <button className="menu-toggle" onClick={() => setSidebarOpen(true)}>
+            <Menu size={24} />
+          </button>
+
+          <div className="top-bar-right">
+
+            {/* ====== Bell Button + Dropdown ====== */}
+            <div ref={notifRef} style={{ position: 'relative' }}>
+              <button
+                className="icon-button"
+                onClick={() => {
+                  setNotifOpen((prev) => !prev);
+                  setUserMenuOpen(false);
+                }}
+                style={{
+                  position: 'relative',
+                  background: notifOpen ? '#f3f4f6' : 'transparent',
+                  border: 'none',
+                  borderRadius: '8px',
+                  padding: '0.5rem',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'background 0.15s',
+                }}
+                title="การแจ้งเตือน"
+              >
+                <Bell size={20} color={notifOpen ? '#2563eb' : '#374151'} />
+                {notificationCount > 0 && (
+                  <span
+                    className="badge"
+                    style={{
+                      position: 'absolute',
+                      top: '2px',
+                      right: '2px',
+                      background: '#ef4444',
+                      color: 'white',
+                      fontSize: '0.65rem',
+                      fontWeight: 700,
+                      borderRadius: '999px',
+                      minWidth: '18px',
+                      height: '18px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '0 3px',
+                      lineHeight: 1,
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    {notificationCount > 99 ? '99+' : notificationCount}
+                  </span>
+                )}
+              </button>
+
+              {notifOpen && doctor?.doctor_id && (
+                <NotificationDropdown
+                  doctorId={doctor.doctor_id}
+                  onClose={() => setNotifOpen(false)}
+                  onCountChange={setNotificationCount}
+                />
+              )}
+            </div>
+
+            {/* ====== User Menu ====== */}
+            <div className="user-menu">
+              <button
+                className="user-button"
+                onClick={() => {
+                  setUserMenuOpen(!userMenuOpen);
+                  setNotifOpen(false);
+                }}
+              >
+                <div className="user-avatar">
+                  <User size={20} />
+                </div>
+              </button>
+
+              {userMenuOpen && (
+                <>
+                  <div
+                    className="dropdown-overlay"
+                    onClick={() => setUserMenuOpen(false)}
+                  />
+                  <div className="user-dropdown">
+                    <Link
+                      to="/profile"
+                      className="dropdown-item"
+                      onClick={() => setUserMenuOpen(false)}
+                    >
+                      <User size={18} />
+                      <span>โปรไฟล์</span>
+                    </Link>
+                    <div className="dropdown-divider" />
+                    <button className="dropdown-item" onClick={handleLogout}>
+                      <LogOut size={18} />
+                      <span>ออกจากระบบ</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </header>
+
+        {/* Page Content */}
+        <main className="page-content">
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Inline Styles สำหรับ Notification Dropdown
+// ============================================================
+const styles = {
+  dropdown: {
+    position: 'absolute',
+    top: 'calc(100% + 10px)',
+    right: 0,
+    width: '380px',
+    maxWidth: '95vw',
+    background: '#fff',
+    borderRadius: '14px',
+    boxShadow: '0 10px 40px rgba(0,0,0,0.15), 0 2px 8px rgba(0,0,0,0.08)',
+    border: '1px solid #e5e7eb',
+    zIndex: 9999,
+    overflow: 'hidden',
+  },
+  dropdownHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '1rem 1.1rem 0.8rem',
+    borderBottom: '1px solid #f1f5f9',
+    background: '#fafafa',
+  },
+  unreadBadge: {
+    background: '#ef4444',
+    color: 'white',
+    fontSize: '0.7rem',
+    fontWeight: 700,
+    borderRadius: '999px',
+    padding: '0.1rem 0.45rem',
+    lineHeight: 1.4,
+  },
+  markAllBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.3rem',
+    padding: '0.3rem 0.65rem',
+    fontSize: '0.75rem',
+    fontWeight: 600,
+    color: '#2563eb',
+    background: '#eff6ff',
+    border: '1px solid #bfdbfe',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    transition: 'background 0.15s',
+    minWidth: 'max-content',
+  },
+  closeBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    padding: '0.3rem',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    color: '#9ca3af',
+  },
+  notifList: {
+    maxHeight: '440px',
+    overflowY: 'auto',
+  },
+  emptyState: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '2.5rem 1rem',
+    gap: '0.5rem',
+  },
+  spinner: {
+    width: '28px',
+    height: '28px',
+    border: '3px solid #e5e7eb',
+    borderTop: '3px solid #2563eb',
+    borderRadius: '50%',
+    animation: 'spin 0.8s linear infinite',
+  },
+  notifItem: {
+    padding: '0.85rem 1rem',
+    borderBottom: '1px solid #f1f5f9',
+    transition: 'background 0.15s',
+    cursor: 'default',
+  },
+  readBtn: {
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '22px',
+    height: '22px',
+    borderRadius: '50%',
+    background: '#eff6ff',
+    border: '1px solid #bfdbfe',
+    color: '#2563eb',
+    cursor: 'pointer',
+    padding: 0,
+    transition: 'background 0.15s',
+  },
+};
