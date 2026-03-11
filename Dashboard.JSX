@@ -1,0 +1,516 @@
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Users, Calendar, AlertCircle, Activity, ChevronRight, RefreshCw } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { patientService, appointmentService, reportService } from '../services/api';
+import './Dashboard.css';
+
+export default function Dashboard() {
+  const navigate = useNavigate();
+
+  const [stats, setStats] = useState({
+    totalPatients: 0,
+    todayAppointments: 0,
+    alerts: 0,
+    patientGrowth: 0
+  });
+
+  const [todayAppointmentsList, setTodayAppointmentsList] = useState([]);
+
+  const [noDataPatients, setNoDataPatients] = useState([]);
+  const [highIopPatients, setHighIopPatients] = useState([]);
+
+  const [medicationRiskCount, setMedicationRiskCount] = useState(0);
+  const [highIopRiskCount, setHighIopRiskCount] = useState(0);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const [missedTodayPatients, setMissedTodayPatients] = useState([]);
+  const [missedTodayCount, setMissedTodayCount] = useState(0);
+
+  // ---------- helpers ----------
+  const toYMDLocal = (d) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const fmtThaiDate = (dateStr) => {
+    if (!dateStr) return '-';
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) return '-';
+    return d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+
+  const safeNum = (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const fmtIOP = (v) => {
+    const n = safeNum(v);
+    return n === null ? '-' : n.toFixed(2);
+  };
+
+  const getDisplayName = (p) =>
+    p?.name ||
+    p?.patient_name ||
+    (p?.first_name || p?.last_name ? `${p.first_name || ''} ${p.last_name || ''}`.trim() : '') ||
+    'ไม่ระบุชื่อ';
+
+  // normalized list for IOP card (✅ ใช้จริงใน UI)
+  const highIopList = useMemo(() => {
+    return (highIopPatients || []).map((p) => {
+      const left = safeNum(p.left_eye_iop ?? p.left_iop ?? p.left);
+      const right = safeNum(p.right_eye_iop ?? p.right_iop ?? p.right);
+      const max = safeNum(
+        p.max_iop ??
+          (left !== null && right !== null ? Math.max(left, right) : left ?? right)
+      );
+
+      const tL = safeNum(p.target_left ?? p.target_iop_left) ?? 21;
+      const tR = safeNum(p.target_right ?? p.target_iop_right) ?? 21;
+
+      return {
+        patient_id: p.patient_id,
+        name: getDisplayName(p),
+        measurement_date: p.measurement_date ?? p.recorded_at ?? p.updated_at ?? null,
+        left,
+        right,
+        max,
+        target_left: tL,
+        target_right: tR
+      };
+    });
+  }, [highIopPatients]);
+
+  // ---------- fetch ----------
+  const fetchDashboardData = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const doctorStr = localStorage.getItem('doctor');
+      const tokenStr = localStorage.getItem('token');
+
+      if (!tokenStr) {
+        setError('กรุณาเข้าสู่ระบบก่อนใช้งาน');
+        setTimeout(() => navigate('/login', { replace: true }), 1000);
+        return;
+      }
+
+      if (!doctorStr) {
+        setError('ไม่พบข้อมูลแพทย์ กรุณาเข้าสู่ระบบใหม่');
+        localStorage.clear();
+        setTimeout(() => navigate('/login', { replace: true }), 1000);
+        return;
+      }
+
+      let doctor;
+      try {
+        doctor = JSON.parse(doctorStr);
+      } catch {
+        setError('ข้อมูลผู้ใช้ไม่ถูกต้อง กรุณาเข้าสู่ระบบใหม่');
+        localStorage.clear();
+        setTimeout(() => navigate('/login', { replace: true }), 1000);
+        return;
+      }
+
+      if (!doctor?.doctor_id) {
+        setError('ไม่พบข้อมูลแพทย์ กรุณาเข้าสู่ระบบใหม่');
+        localStorage.clear();
+        setTimeout(() => navigate('/login', { replace: true }), 1000);
+        return;
+      }
+
+      // 1) Patients (count)
+      try {
+        const patientsResponse = await patientService.getAllPatients();
+        const patientsData = patientsResponse?.data?.patients || [];
+        if (Array.isArray(patientsData)) {
+          setStats((prev) => ({ ...prev, totalPatients: patientsData.length }));
+        }
+      } catch (e) {
+        console.error('Patients error:', e);
+      }
+
+      // 2) Dashboard stats (optional)
+      try {
+        const statsResponse = await patientService.getDashboardStats();
+        const d = statsResponse?.data?.data || statsResponse?.data;
+
+        if (statsResponse?.success && d) {
+          setStats((prev) => ({
+            ...prev,
+            totalPatients: d.total_patients ?? prev.totalPatients,
+            patientGrowth: d.patient_growth_percentage ?? 0
+          }));
+        }
+      } catch (e) {
+        console.log('Info: dashboard/stats not available (OK)', e?.message);
+      }
+
+      // 3) Upcoming appointments (7 days)
+      try {
+        const today = new Date();
+        const todayStr = toYMDLocal(today);
+
+        const nextWeek = new Date(today);
+        nextWeek.setDate(today.getDate() + 7);
+        const nextWeekStr = toYMDLocal(nextWeek);
+
+        const resp = await appointmentService.getDoctorAppointments(doctor.doctor_id, {
+          start_date: todayStr,
+          end_date: nextWeekStr
+        });
+
+        const appts =
+          resp?.data?.appointments ||
+          resp?.data?.data?.appointments ||
+          resp?.appointments ||
+          resp?.data ||
+          [];
+
+        const appointments = Array.isArray(appts) ? appts : [];
+
+        const cleaned = appointments
+          .filter((a) => a.appointment_status !== 'cancelled')
+          .sort((a, b) => {
+            const dateA = new Date(`${a.appointment_date} ${a.appointment_time || '00:00:00'}`);
+            const dateB = new Date(`${b.appointment_date} ${b.appointment_time || '00:00:00'}`);
+            return dateA - dateB;
+          });
+
+        setTodayAppointmentsList(cleaned.slice(0, 5));
+        setStats((prev) => ({ ...prev, todayAppointments: cleaned.length }));
+      } catch (e) {
+        console.error('Appointments error:', e);
+      }
+
+      // 4) Medication risk (no compliance data)
+      try {
+        const overview = await reportService.getComplianceOverview(doctor.doctor_id);
+        const groups = overview?.data?.groups || overview?.data?.data?.groups || [];
+        const noData = groups.find((g) => g.group === 'no_data')?.patient_list || [];
+
+        setNoDataPatients(noData.slice(0, 3));
+        setMedicationRiskCount(noData.length);
+      } catch (e) {
+        console.error('Compliance overview fetch error:', e);
+      }
+
+      // 5) High IOP risk (show list + count)
+      try {
+        const resp = await reportService.getHighIOPRisk(doctor.doctor_id);
+
+        const list =
+          resp?.data?.patient_list ||
+          resp?.data?.patients ||
+          resp?.data?.data?.patient_list ||
+          resp?.data?.data?.patients ||
+          resp?.patients ||
+          resp?.data ||
+          [];
+
+        const arr = Array.isArray(list) ? list : [];
+
+        setHighIopPatients(arr.slice(0, 3));
+        setHighIopRiskCount(arr.length);
+      } catch (e) {
+        console.error('High IOP risk fetch error:', e);
+      }
+
+      // 6) Missed today (ตามเวลาแพทย์กำหนด แต่ยังไม่หยอด)
+      try {
+        const resp = await reportService.getMissedToday(doctor.doctor_id); 
+        // หรือถ้าคุณทำไว้ที่ patientService ก็เปลี่ยนชื่อ service ให้ตรง
+
+        const list =
+          resp?.data?.patient_list ||
+          resp?.data?.patients ||
+          resp?.data?.data?.patient_list ||
+          resp?.data?.data?.patients ||
+          resp?.data ||
+          [];
+
+        const arr = Array.isArray(list) ? list : [];
+        setMissedTodayPatients(arr.slice(0, 3));   // โชว์ 3 คนบนการ์ด
+        setMissedTodayCount(arr.length);          // จำนวนทั้งหมดวันนี้
+      } catch (e) {
+        console.error('Missed today fetch error:', e);
+      }
+
+
+    } catch (e) {
+      console.error('Dashboard fetch error:', e);
+      if (e?.response?.status === 401) {
+        setError('กรุณาเข้าสู่ระบบใหม่');
+        localStorage.clear();
+        setTimeout(() => navigate('/login', { replace: true }), 1000);
+      } else {
+        setError('เกิดข้อผิดพลาดในการโหลดข้อมูล');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [navigate]);
+
+  useEffect(() => {
+    fetchDashboardData();
+  }, [fetchDashboardData]);
+
+  // ---------- states ----------
+  if (loading) {
+    return (
+      <div className="dashboard loading">
+        <div className="loading-container">
+          <Activity size={48} className="loading-icon" />
+          <p className="loading-text">กำลังโหลดข้อมูล...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="dashboard error">
+        <div className="error-state">
+          <AlertCircle size={48} color="#dc2626" />
+          <h3>เกิดข้อผิดพลาด</h3>
+          <p>{error}</p>
+          <button className="btn-retry" onClick={fetchDashboardData}>
+            <RefreshCw size={20} />
+            ลองใหม่อีกครั้ง
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------- UI ----------
+  return (
+    <div className="dashboard">
+      {/* Header */}
+      <div className="dashboard-header">
+        <h1>แดชบอร์ด</h1>
+        <button className="btn-refresh" onClick={fetchDashboardData} title="รีเฟรชข้อมูล">
+          <RefreshCw size={20} />
+        </button>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="stats-grid">
+        <div className="stat-card">
+          <div className="stat-icon" style={{ background: '#dbeafe' }}>
+            <Users size={24} color="#2563eb" />
+          </div>
+          <div className="stat-content">
+            <div className="stat-label">ผู้ป่วยทั้งหมด</div>
+            <div className="stat-value">{stats.totalPatients}</div>
+          </div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-icon" style={{ background: '#dcfce7' }}>
+            <Calendar size={24} color="#16a34a" />
+          </div>
+          <div className="stat-content">
+            <div className="stat-label">นัดหมายใกล้ถึง (7 วัน)</div>
+            <div className="stat-value">{stats.todayAppointments}</div>
+          </div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-icon" style={{ background: '#fee2e2' }}>
+            <AlertCircle size={24} color="#dc2626" />
+          </div>
+          <div className="stat-content">
+            <div className="stat-label"> ผู้ป่วยเสี่ยงด้านการใช้ยา </div>
+            <div className="stat-value">{medicationRiskCount}</div>
+          </div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-icon" style={{ background: '#fee2e2' }}>
+            <AlertCircle size={24} color="#dc2626" />
+          </div>
+          <div className="stat-content">
+            <div className="stat-label"> ผู้ป่วยค่า IOP เกินเป้าหมาย</div>
+            <div className="stat-value">{highIopRiskCount}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ====== LAYOUT ตามรูป: ซ้าย 2 กล่อง / ขวา 2 กล่อง (ล็อคซ้าย-ขวาแต่ responsive) ====== */}
+      <div className="dashboard-grid">
+        {/* LEFT COLUMN */}
+        <div className="left-stack">
+          {/* High IOP */}
+          <div className="dashboard-section high-iop-section">
+            <div className="section-header alert-header">
+              <div className="header-left">
+                <AlertCircle size={20} color="#dc2626" />
+                <h2>ผู้ป่วยที่ค่า IOP สูงเกิน Target</h2>
+              </div>
+
+              <button className="link-button" onClick={() => navigate('/reports')}>
+                ดูรายงาน <ChevronRight size={16} />
+              </button>
+            </div>
+
+            {highIopList.length === 0 ? (
+              <div className="empty-state">
+                <p>ไม่พบผู้ป่วยที่ IOP สูงเกิน Target</p>
+              </div>
+            ) : (
+              <div className="high-iop-list">
+                {highIopList.map((p) => (
+                  <div
+                    key={p.patient_id}
+                    className="high-iop-item"
+                    onClick={() => navigate(`/patients/${p.patient_id}`)}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <div className="high-iop-left">
+                      <div className="high-iop-name">{p.name}</div>
+                      <div className="high-iop-sub">
+                        ล่าสุด: {fmtThaiDate(p.measurement_date)} | Target L/R:{' '}
+                        {fmtIOP(p.target_left)}/{fmtIOP(p.target_right)}
+                      </div>
+                    </div>
+
+                    <div className="high-iop-chips">
+                      <span className="chip">L: {fmtIOP(p.left)}</span>
+                      <span className="chip">R: {fmtIOP(p.right)}</span>
+                      <span className="chip chip-danger">MAX: {fmtIOP(p.max)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Missed Today - แจ้งเตือนวันนี้ */}
+          <div className="dashboard-section low-compliance-section">
+            <div className="section-header alert-header">
+              <div className="header-left">
+                <AlertCircle size={20} color="#dc2626" />
+                <h2>แจ้งเตือนวันนี้: ผู้ป่วยยังไม่หยอดยา</h2>
+              </div>
+
+              <button className="link-button" onClick={() => navigate('/patients')}>
+                ดูทั้งหมด <ChevronRight size={16} />
+              </button>
+            </div>
+
+            {missedTodayPatients.length === 0 ? (
+              <div className="empty-state">
+                <p>วันนี้ยังไม่พบผู้ป่วยที่พลาดการหยอดยา</p>
+              </div>
+            ) : (
+              <div className="no-data-list">
+                <div style={{ marginBottom: 12, color: '#475569', fontWeight: 600 }}>
+                  วันนี้พลาดการหยอดยา {missedTodayCount} คน
+                </div>
+
+                {missedTodayPatients.map((p) => (
+                  <div
+                    key={p.patient_id}
+                    className="no-data-item"
+                    onClick={() => navigate(`/patients/${p.patient_id}`)}
+                  >
+                    <div className="no-data-left">
+                      <div className="no-data-name">
+                        คุณ{' '}
+                        {p.name ||
+                          (p.first_name || p.last_name ? `${p.first_name || ''} ${p.last_name || ''}`.trim() : 'ไม่ระบุชื่อ')}
+                      </div>
+
+                      <div className="no-data-sub">
+                        พลาด {p.missed_count ?? 1} เวลา
+                        {p.missed_labels ? ` (${p.missed_labels})` : ''}
+                      </div>
+                    </div>
+
+                    <button
+                      className="btn-detail"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/patients/${p.patient_id}`);
+                      }}
+                    >
+                      ดูรายละเอียด
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* RIGHT COLUMN */}
+        <div className="right-stack">
+          {/* Upcoming appointments */}
+          <div className="dashboard-section upcoming-section">
+            <div className="section-header">
+              <h2>นัดหมายที่กำลังจะมาถึง</h2>
+              <button className="link-button" onClick={() => navigate('/appointments')}>
+                ดูทั้งหมด <ChevronRight size={16} />
+              </button>
+            </div>
+
+            {todayAppointmentsList.length === 0 ? (
+              <div className="empty-state">
+                <p>ไม่มีนัดหมายในช่วงนี้</p>
+              </div>
+            ) : (
+              <div className="upcoming-list">
+                {todayAppointmentsList.slice(0, 1).map((apt) => (
+                  <div
+                    key={apt.appointment_id}
+                    className="upcoming-item"
+                    onClick={() => navigate('/appointments')}
+                  >
+                    <div className="upcoming-time">{apt.appointment_time?.substring(0, 5) || '00:00'}</div>
+
+                    <div className="upcoming-info">
+                      <div className="upcoming-name">{apt.patient?.name || 'ไม่ระบุชื่อ'}</div>
+                      <div className="upcoming-date">{fmtThaiDate(apt.appointment_date)}</div>
+                      <div className="upcoming-reason">{apt.reason || 'ตรวจตามนัดทั่วไป'}</div>
+                    </div>
+
+                    <span className="upcoming-badge">นัดหมาย</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Quick Actions (แยกกรอบ ไม่รวมกับผู้ป่วยล่าสุด) */}
+          <div className="dashboard-section quick-actions">
+            <h2>การดำเนินการด่วน</h2>
+            <div className="actions-grid">
+              <button className="action-card" onClick={() => navigate('/patients')}>
+                <Users size={32} />
+                <span>เพิ่มผู้ป่วยใหม่</span>
+              </button>
+
+              <button className="action-card" onClick={() => navigate('/appointments')}>
+                <Calendar size={32} />
+                <span>สร้างนัดหมาย</span>
+              </button>
+
+              <button className="action-card" onClick={() => navigate('/reports')}>
+                <Activity size={32} />
+                <span>ดูรายงาน</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
