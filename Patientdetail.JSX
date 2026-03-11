@@ -1,0 +1,916 @@
+import { useState, useEffect, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import {
+  User, Calendar, Phone, MapPin, Activity, Eye, FileText, Pill,
+  Edit2, Save, X, Plus, Trash2, AlertCircle, ClipboardList
+} from 'lucide-react';
+import {
+  patientService,
+  medicationService,
+  diagnosisService,
+  iopService,
+  visualFieldService
+} from '../services/api';
+import MedicationComplianceTab from './MedicationComplianceTab';
+import IOPTrendChart from './IOPTrendChart';
+import './PatientDetail.css';
+
+export default function PatientDetail() {
+  const { patientId } = useParams();
+  const navigate = useNavigate();
+
+  // Main States
+  const [patient, setPatient] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [activeTab, setActiveTab] = useState('info');
+
+  // Edit States
+  const [editingInfo, setEditingInfo] = useState(false);
+  const [editingDiagnosis, setEditingDiagnosis] = useState(null);
+
+  // Data States
+  const [diagnoses, setDiagnoses] = useState([]);
+  const [medications, setMedications] = useState([]);
+  const [iopRecords, setIopRecords] = useState([]);
+  const [vfRecords, setVfRecords] = useState([]);
+
+  // Form States
+  const [patientForm, setPatientForm] = useState({});
+  const [diagnosisForm, setDiagnosisForm] = useState({
+    glaucoma_type: '',
+    severity: '',
+    left_eye_affected: false,
+    right_eye_affected: false,
+    icd_code: '',
+    notes: '',
+    target_iop_left: '',
+    target_iop_right: '',
+  });
+
+  // ==================== IOP MODAL STATES ====================
+  const [showIOPModal, setShowIOPModal] = useState(false);
+  const [savingIOP, setSavingIOP] = useState(false);
+  const [iopForm, setIopForm] = useState({
+    left_eye_iop: '',
+    right_eye_iop: '',
+    measurement_device: 'GAT',
+    notes: ''
+  });
+
+  const openIOPModal = () => {
+    setIopForm({ left_eye_iop: '', right_eye_iop: '', measurement_device: 'GAT', notes: '' });
+    setShowIOPModal(true);
+  };
+
+  const closeIOPModal = () => setShowIOPModal(false);
+
+  const handleSaveIOP = async () => {
+    if (!iopForm.left_eye_iop && !iopForm.right_eye_iop) {
+      alert('กรุณากรอกค่า IOP อย่างน้อย 1 ข้าง');
+      return;
+    }
+    try {
+      setSavingIOP(true);
+      await iopService.recordIOP({
+        patient_id: patientId,
+        left_eye_iop: iopForm.left_eye_iop ? Number(iopForm.left_eye_iop) : null,
+        right_eye_iop: iopForm.right_eye_iop ? Number(iopForm.right_eye_iop) : null,
+        measurement_device: iopForm.measurement_device,
+        notes: iopForm.notes?.trim() ? iopForm.notes.trim() : null,
+      });
+      closeIOPModal();
+      await fetchPatientData();
+      alert('✅ บันทึก IOP สำเร็จ');
+    } catch (error) {
+      console.error('Error saving IOP:', error);
+      alert('❌ บันทึก IOP ไม่สำเร็จ: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setSavingIOP(false);
+    }
+  };
+
+  // ==================== VISUAL FIELD MODAL STATES ====================
+  const [showVFModal, setShowVFModal] = useState(false);
+  const [savingVF, setSavingVF] = useState(false);
+  const [vfForm, setVfForm] = useState({
+    test_date: new Date().toISOString().split('T')[0],
+    eye: 'both',
+    left_eye_md: '', right_eye_md: '',
+    left_eye_psd: '', right_eye_psd: '',
+    left_eye_vfi: '', right_eye_vfi: '',
+    left_eye_reliability: 'high', right_eye_reliability: 'high',
+    test_strategy: 'SITA Standard',
+    notes: ''
+  });
+
+  const openVFModal = () => {
+    setVfForm({
+      test_date: new Date().toISOString().split('T')[0],
+      eye: 'both',
+      left_eye_md: '', right_eye_md: '',
+      left_eye_psd: '', right_eye_psd: '',
+      left_eye_vfi: '', right_eye_vfi: '',
+      left_eye_reliability: 'high', right_eye_reliability: 'high',
+      test_strategy: 'SITA Standard',
+      notes: ''
+    });
+    setShowVFModal(true);
+  };
+
+  const closeVFModal = () => setShowVFModal(false);
+
+  const handleSaveVF = async () => {
+    const hasAnyValue =
+      vfForm.left_eye_md || vfForm.right_eye_md ||
+      vfForm.left_eye_psd || vfForm.right_eye_psd ||
+      vfForm.left_eye_vfi || vfForm.right_eye_vfi;
+
+    if (!vfForm.test_date) { alert('กรุณาเลือกวันที่ตรวจ'); return; }
+    if (!vfForm.eye) { alert('กรุณาเลือกตาที่ตรวจ'); return; }
+    if (!hasAnyValue) { alert('กรุณากรอกค่าอย่างน้อย 1 ค่า (MD/PSD/VFI)'); return; }
+
+    try {
+      setSavingVF(true);
+      await visualFieldService.recordVisualField({
+        patient_id: patientId,
+        test_date: vfForm.test_date,
+        eye: vfForm.eye,
+        left_eye_md: vfForm.left_eye_md !== '' ? Number(vfForm.left_eye_md) : null,
+        right_eye_md: vfForm.right_eye_md !== '' ? Number(vfForm.right_eye_md) : null,
+        left_eye_psd: vfForm.left_eye_psd !== '' ? Number(vfForm.left_eye_psd) : null,
+        right_eye_psd: vfForm.right_eye_psd !== '' ? Number(vfForm.right_eye_psd) : null,
+        left_eye_vfi: vfForm.left_eye_vfi !== '' ? Number(vfForm.left_eye_vfi) : null,
+        right_eye_vfi: vfForm.right_eye_vfi !== '' ? Number(vfForm.right_eye_vfi) : null,
+        left_eye_reliability: vfForm.left_eye_reliability || null,
+        right_eye_reliability: vfForm.right_eye_reliability || null,
+        test_strategy: vfForm.test_strategy?.trim() ? vfForm.test_strategy.trim() : null,
+        notes: vfForm.notes?.trim() ? vfForm.notes.trim() : null
+      });
+      closeVFModal();
+      await fetchPatientData();
+      alert('✅ บันทึก Visual Field สำเร็จ');
+    } catch (error) {
+      console.error('Error saving VF:', error);
+      alert('❌ บันทึก Visual Field ไม่สำเร็จ: ' + (error.response?.data?.message || error.message));
+    } finally {
+      setSavingVF(false);
+    }
+  };
+
+  const fetchPatientData = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      // 1. Get Patient Info
+      const patientResponse = await patientService.getPatientById(patientId);
+      const raw =
+        patientResponse?.data?.patient ||
+        patientResponse?.data?.data?.patient ||
+        patientResponse?.data ||
+        patientResponse;
+
+      const ok = patientResponse?.success === true || patientResponse?.data?.success === true || !!raw;
+
+      if (ok && raw) {
+        const fullName = (raw.name || raw.full_name || '').trim();
+        const parts = fullName ? fullName.split(' ') : [];
+        const normalizedPatient = {
+          ...raw,
+          first_name: raw.first_name || parts[0] || '',
+          last_name: raw.last_name || (parts.length > 1 ? parts.slice(1).join(' ') : ''),
+          phone_number: raw.phone_number || raw.phone || '',
+          address: raw.address || '',
+          date_of_birth: raw.date_of_birth || raw.dob || '',
+          patient_hn: raw.patient_hn || raw.hn || raw.patient_id,
+        };
+        setPatient(normalizedPatient);
+        setPatientForm({
+          first_name: normalizedPatient.first_name || '',
+          last_name: normalizedPatient.last_name || '',
+          date_of_birth: normalizedPatient.date_of_birth || '',
+          phone_number: normalizedPatient.phone_number || '',
+          address: normalizedPatient.address || ''
+        });
+      } else {
+        setPatient(null);
+      }
+
+      // 2. Get Diagnoses
+      try {
+        const diagnosesResponse = await diagnosisService.getPatientDiagnoses(patientId);
+        const list =
+          diagnosesResponse?.success
+            ? (Array.isArray(diagnosesResponse?.data?.diagnoses)
+                ? diagnosesResponse.data.diagnoses
+                : Array.isArray(diagnosesResponse?.data)
+                  ? diagnosesResponse.data
+                  : [])
+            : [];
+        setDiagnoses(list);
+      } catch (e) {
+        console.log('Info: Diagnoses not available', e);
+        setDiagnoses([]);
+      }
+
+      // 3. Get Medications
+      try {
+        const medsResponse = await medicationService.getPatientMedications(patientId, 'active');
+        let medsData = [];
+        if (medsResponse.success && medsResponse.data) {
+          if (medsResponse.data.medications && Array.isArray(medsResponse.data.medications)) {
+            medsData = medsResponse.data.medications;
+          } else if (Array.isArray(medsResponse.data)) {
+            medsData = medsResponse.data;
+          } else {
+            medsData = [medsResponse.data];
+          }
+        } else if (Array.isArray(medsResponse)) {
+          medsData = medsResponse;
+        }
+        setMedications(medsData);
+      } catch {
+        setMedications([]);
+      }
+
+      // 4. Get IOP Records
+      try {
+        const iopResponse = await iopService.getPatientIOPHistory(patientId, { limit: 10 });
+        if (iopResponse.success && iopResponse.data) {
+          setIopRecords(
+            iopResponse.data.records && Array.isArray(iopResponse.data.records)
+              ? iopResponse.data.records
+              : Array.isArray(iopResponse.data)
+                ? iopResponse.data
+                : []
+          );
+        } else {
+          setIopRecords([]);
+        }
+      } catch {
+        setIopRecords([]);
+      }
+
+      // 5. Get Visual Field Records
+      try {
+        const vfResponse = await visualFieldService.getPatientVisualFieldHistory(patientId, { limit: 10 });
+        const vfList =
+          vfResponse?.success && vfResponse?.data
+            ? Array.isArray(vfResponse.data.visual_field_results)
+              ? vfResponse.data.visual_field_results
+              : Array.isArray(vfResponse.data)
+                ? vfResponse.data
+                : []
+            : [];
+        setVfRecords(vfList);
+      } catch (error) {
+        console.error('VF fetch error:', error);
+        setVfRecords([]);
+      }
+
+    } catch (error) {
+      console.error('❌ Error fetching patient data:', error);
+      setError('ไม่สามารถโหลดข้อมูลผู้ป่วยได้');
+    } finally {
+      setLoading(false);
+    }
+  }, [patientId]);
+
+  useEffect(() => {
+    if (patientId) fetchPatientData();
+  }, [patientId, fetchPatientData]);
+
+  // ==================== INFO HANDLERS ====================
+  const handleSaveInfo = async () => {
+    try {
+      const response = await patientService.updatePatient(patientId, patientForm);
+      if (response.success) {
+        setPatient({ ...patient, ...patientForm });
+        setEditingInfo(false);
+        alert('✅ บันทึกข้อมูลสำเร็จ');
+      }
+    } catch (error) {
+      console.error('Error updating patient:', error);
+      alert('❌ เกิดข้อผิดพลาดในการบันทึก');
+    }
+  };
+
+  // ==================== DIAGNOSIS HANDLERS ====================
+  const handleAddDiagnosis = () => {
+    setDiagnosisForm({ glaucoma_type: '', severity: '', left_eye_affected: false, right_eye_affected: false, icd_code: '', notes: '', target_iop_left: '', target_iop_right: '' });
+    setEditingDiagnosis('new');
+  };
+
+  const handleEditDiagnosis = (diagnosis) => {
+    setDiagnosisForm({
+      ...diagnosis,
+      target_iop_left:  diagnosis.target_iop_left  != null ? String(diagnosis.target_iop_left)  : '',
+      target_iop_right: diagnosis.target_iop_right != null ? String(diagnosis.target_iop_right) : '',
+    });
+    setEditingDiagnosis(diagnosis.diagnosis_id);
+  };
+
+  const handleSaveDiagnosis = async () => {
+    try {
+      const diagnosisData = {
+        patient_id: patientId,
+        ...diagnosisForm,
+        diagnosis_date: new Date().toISOString().split('T')[0],
+        target_iop_left:  diagnosisForm.target_iop_left  !== '' ? parseFloat(diagnosisForm.target_iop_left)  : null,
+        target_iop_right: diagnosisForm.target_iop_right !== '' ? parseFloat(diagnosisForm.target_iop_right) : null,
+      };
+      if (editingDiagnosis === 'new') {
+        const response = await diagnosisService.createDiagnosis(diagnosisData);
+        if (response.success) { alert('✅ เพิ่มการวินิจฉัยสำเร็จ'); fetchPatientData(); setEditingDiagnosis(null); }
+      } else {
+        const response = await diagnosisService.updateDiagnosis(editingDiagnosis, diagnosisData);
+        if (response.success) { alert('✅ อัพเดทการวินิจฉัยสำเร็จ'); fetchPatientData(); setEditingDiagnosis(null); }
+      }
+    } catch (error) {
+      console.error('Error saving diagnosis:', error);
+      alert('❌ เกิดข้อผิดพลาดในการบันทึก');
+    }
+  };
+
+  const handleDeleteDiagnosis = async (diagnosisId) => {
+    if (!confirm('ต้องการลบการวินิจฉัยนี้หรือไม่?')) return;
+    try {
+      const response = await diagnosisService.deleteDiagnosis(diagnosisId);
+      if (response.success) { alert('✅ ลบสำเร็จ'); fetchPatientData(); }
+    } catch (error) {
+      console.error('Error deleting diagnosis:', error);
+      alert('❌ เกิดข้อผิดพลาดในการลบ');
+    }
+  };
+
+  // ==================== MEDICATION HANDLERS ====================
+  const handleDiscontinueMedication = async (prescriptionId, medicationName) => {
+    const reason = prompt(`หยุดยา "${medicationName}"\n\nระบุเหตุผล:`);
+    if (!reason) return;
+
+    try {
+      const response = await medicationService.updateMedication(prescriptionId, {
+        action: 'stop',
+        discontinued_reason: reason,
+      });
+      if (response.success || response.message) {
+        alert('✅ หยุดยาสำเร็จ');
+        fetchPatientData();
+      }
+    } catch (error) {
+      console.error('Error discontinuing medication:', error);
+      alert('❌ เกิดข้อผิดพลาด: ' + (error.response?.data?.message || error.message));
+    }
+  };
+
+  // ==================== RENDER ====================
+  if (loading) {
+    return (
+      <div className="loading-container">
+        <div className="spinner"></div>
+        <p>กำลังโหลดข้อมูล...</p>
+      </div>
+    );
+  }
+
+  if (error || !patient) {
+    return (
+      <div className="error-container">
+        <AlertCircle size={48} color="#dc2626" />
+        <p>{error || 'ไม่พบข้อมูลผู้ป่วย'}</p>
+        <button onClick={() => navigate('/patients')} className="btn-secondary">กลับ</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="patient-detail">
+      {/* Header */}
+      <div className="detail-header">
+        <button className="btn-back" onClick={() => navigate('/patients')}>
+          ← กลับไปหน้ารายชื่อผู้ป่วย
+        </button>
+
+        <div className="patient-header-info">
+          <div className="patient-avatar">
+            <User size={32} />
+          </div>
+          <div>
+            <h1>{patient.first_name || patient.name || ''} {patient.last_name || ''}</h1>
+            <div className="patient-meta">
+              <span>HN: {patient.patient_hn || patient.patient_id}</span>
+              <span>•</span>
+              <span>อายุ: {patient.age || '-'} ปี</span>
+              <span>•</span>
+              <span>
+                เพศ: {patient.gender === 'M' || patient.gender === 'male'
+                  ? 'ชาย'
+                  : patient.gender === 'F' || patient.gender === 'female'
+                    ? 'หญิง'
+                    : '-'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+
+      </div>
+
+      {/* Tabs */}
+      <div className="tabs">
+        <button className={`tab ${activeTab === 'info' ? 'active' : ''}`} onClick={() => setActiveTab('info')}>
+          ข้อมูลทั่วไป
+        </button>
+        <button className={`tab ${activeTab === 'diagnosis' ? 'active' : ''}`} onClick={() => setActiveTab('diagnosis')}>
+          การวินิจฉัย
+        </button>
+        <button className={`tab ${activeTab === 'treatment' ? 'active' : ''}`} onClick={() => setActiveTab('treatment')}>
+          ยา
+        </button>
+        <button className={`tab ${activeTab === 'compliance' ? 'active' : ''}`} onClick={() => setActiveTab('compliance')}>
+          ติดตามการหยอดยา
+        </button>
+        {/* ✅ TAB ใหม่: ค่า IOP */}
+        <button className={`tab ${activeTab === 'iop' ? 'active' : ''}`} onClick={() => setActiveTab('iop')}>
+          ค่า IOP
+        </button>
+        <button className={`tab ${activeTab === 'records' ? 'active' : ''}`} onClick={() => setActiveTab('records')}>
+          บันทึกการตรวจ
+        </button>
+      </div>
+
+      {/* Tab Content */}
+      <div className="tab-content">
+
+        {/* ===== INFO TAB ===== */}
+        {activeTab === 'info' && (
+          <div className="info-tab">
+            <div className="section-header">
+              <h3>ข้อมูลทั่วไป</h3>
+              {!editingInfo ? (
+                <button onClick={() => setEditingInfo(true)} className="btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}>
+                  <Edit2 size={16} /> แก้ไข
+                </button>
+              ) : (
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button onClick={handleSaveInfo} className="btn-primary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}>
+                    <Save size={16} /> บันทึก
+                  </button>
+                  <button onClick={() => setEditingInfo(false)} className="btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }}>
+                    <X size={16} /> ยกเลิก
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="info-grid">
+              <div className="info-card">
+                <div className="info-icon"><User size={24} /></div>
+                <div style={{ flex: 1 }}>
+                  <label>ชื่อ-นามสกุล</label>
+                  {editingInfo ? (
+                    <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                      <input type="text" value={patientForm.first_name} onChange={(e) => setPatientForm({ ...patientForm, first_name: e.target.value })} placeholder="ชื่อ" style={{ flex: 1, padding: '0.5rem', border: '1px solid #e5e7eb', borderRadius: '6px' }} />
+                      <input type="text" value={patientForm.last_name} onChange={(e) => setPatientForm({ ...patientForm, last_name: e.target.value })} placeholder="นามสกุล" style={{ flex: 1, padding: '0.5rem', border: '1px solid #e5e7eb', borderRadius: '6px' }} />
+                    </div>
+                  ) : (
+                    <p>{patient.first_name} {patient.last_name}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="info-card">
+                <div className="info-icon"><Calendar size={24} /></div>
+                <div style={{ flex: 1 }}>
+                  <label>วันเกิด</label>
+                  {editingInfo ? (
+                    <input type="date" value={patientForm.date_of_birth} onChange={(e) => setPatientForm({ ...patientForm, date_of_birth: e.target.value })} style={{ marginTop: '0.5rem', padding: '0.5rem', border: '1px solid #e5e7eb', borderRadius: '6px', width: '100%' }} />
+                  ) : (
+                    <p>{patient.date_of_birth ? new Date(patient.date_of_birth).toLocaleDateString('th-TH', { day: 'numeric', month: 'long', year: 'numeric' }) : '-'}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="info-card">
+                <div className="info-icon"><Phone size={24} /></div>
+                <div style={{ flex: 1 }}>
+                  <label>เบอร์โทรศัพท์</label>
+                  {editingInfo ? (
+                    <input type="tel" value={patientForm.phone_number} onChange={(e) => setPatientForm({ ...patientForm, phone_number: e.target.value })} placeholder="0xx-xxx-xxxx" style={{ marginTop: '0.5rem', padding: '0.5rem', border: '1px solid #e5e7eb', borderRadius: '6px', width: '100%' }} />
+                  ) : (
+                    <p>{patient.phone_number || '-'}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="info-card" style={{ gridColumn: '1 / -1' }}>
+                <div className="info-icon"><MapPin size={24} /></div>
+                <div style={{ flex: 1 }}>
+                  <label>ที่อยู่</label>
+                  {editingInfo ? (
+                    <textarea value={patientForm.address} onChange={(e) => setPatientForm({ ...patientForm, address: e.target.value })} placeholder="ที่อยู่" rows={3} style={{ marginTop: '0.5rem', padding: '0.5rem', border: '1px solid #e5e7eb', borderRadius: '6px', width: '100%', resize: 'vertical' }} />
+                  ) : (
+                    <p>{patient.address || '-'}</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===== DIAGNOSIS TAB ===== */}
+        {activeTab === 'diagnosis' && (
+          <div className="diagnosis-tab">
+            <div className="section-header">
+              <h3>การวินิจฉัย</h3>
+              <button onClick={handleAddDiagnosis} className="btn-add">
+                <Plus size={18} /> เพิ่มการวินิจฉัย
+              </button>
+            </div>
+
+            {editingDiagnosis && (
+              <div style={{ background: '#f9fafb', padding: '1.5rem', borderRadius: '12px', marginBottom: '1.5rem', border: '1px solid #e5e7eb' }}>
+                <h4 style={{ marginBottom: '1rem' }}>{editingDiagnosis === 'new' ? 'เพิ่มการวินิจฉัยใหม่' : 'แก้ไขการวินิจฉัย'}</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>ประเภท Glaucoma</label>
+                    <select value={diagnosisForm.glaucoma_type} onChange={(e) => setDiagnosisForm({ ...diagnosisForm, glaucoma_type: e.target.value })} style={{ width: '100%', padding: '0.5rem', border: '1px solid #e5e7eb', borderRadius: '6px' }}>
+                      <option value="">เลือกประเภท</option>
+                      <option value="Primary Open-Angle Glaucoma">Primary Open-Angle Glaucoma</option>
+                      <option value="Primary Angle-Closure Glaucoma">Primary Angle-Closure Glaucoma</option>
+                      <option value="Normal-Tension Glaucoma">Normal-Tension Glaucoma</option>
+                      <option value="Secondary Glaucoma">Secondary Glaucoma</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>ความรุนแรง</label>
+                    <select value={diagnosisForm.severity} onChange={(e) => setDiagnosisForm({ ...diagnosisForm, severity: e.target.value })} style={{ width: '100%', padding: '0.5rem', border: '1px solid #e5e7eb', borderRadius: '6px' }}>
+                      <option value="">เลือกระดับ</option>
+                      <option value="mild">เล็กน้อย (Mild)</option>
+                      <option value="moderate">ปานกลาง (Moderate)</option>
+                      <option value="severe">รุนแรง (Severe)</option>
+                    </select>
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>ตำแหน่งที่ได้รับผลกระทบ</label>
+                    <div style={{ display: 'flex', gap: '1.5rem' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={diagnosisForm.left_eye_affected} onChange={(e) => setDiagnosisForm({ ...diagnosisForm, left_eye_affected: e.target.checked })} /> ตาซ้าย
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={diagnosisForm.right_eye_affected} onChange={(e) => setDiagnosisForm({ ...diagnosisForm, right_eye_affected: e.target.checked })} /> ตาขวา
+                      </label>
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>ICD Code</label>
+                    <input type="text" value={diagnosisForm.icd_code} onChange={(e) => setDiagnosisForm({ ...diagnosisForm, icd_code: e.target.value })} placeholder="เช่น H40.1" style={{ width: '100%', padding: '0.5rem', border: '1px solid #e5e7eb', borderRadius: '6px' }} />
+                  </div>
+                  {/* Target IOP */}
+                  <div style={{ gridColumn: '1 / -1', background: '#f0f9ff', border: '1.5px solid #bae6fd', borderRadius: '10px', padding: '1rem' }}>
+                    <label style={{ display: 'block', marginBottom: '0.75rem', fontWeight: '700', color: '#0369a1' }}>
+                      🎯 กำหนด Target IOP (mmHg)
+                    </label>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: '600', fontSize: '0.85rem', color: '#64748b' }}>ตาซ้าย (OS)</label>
+                        <input
+                          type="number" min="5" max="40" step="0.5"
+                          value={diagnosisForm.target_iop_left ?? ''}
+                          onChange={(e) => setDiagnosisForm({ ...diagnosisForm, target_iop_left: e.target.value })}
+                          placeholder="เช่น 18"
+                          style={{ width: '100%', padding: '0.5rem', border: '1px solid #7dd3fc', borderRadius: '6px', boxSizing: 'border-box' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', marginBottom: '0.4rem', fontWeight: '600', fontSize: '0.85rem', color: '#64748b' }}>ตาขวา (OD)</label>
+                        <input
+                          type="number" min="5" max="40" step="0.5"
+                          value={diagnosisForm.target_iop_right ?? ''}
+                          onChange={(e) => setDiagnosisForm({ ...diagnosisForm, target_iop_right: e.target.value })}
+                          placeholder="เช่น 18"
+                          style={{ width: '100%', padding: '0.5rem', border: '1px solid #7dd3fc', borderRadius: '6px', boxSizing: 'border-box' }}
+                        />
+                      </div>
+                    </div>
+                    <small style={{ color: '#64748b', fontSize: '0.78rem', marginTop: '0.4rem', display: 'block' }}>
+                      ระบบจะแจ้งเตือนเมื่อค่า IOP ของผู้ป่วยเกินกว่าที่กำหนด
+                    </small>
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>หมายเหตุ</label>
+                    <textarea value={diagnosisForm.notes} onChange={(e) => setDiagnosisForm({ ...diagnosisForm, notes: e.target.value })} placeholder="รายละเอียดเพิ่มเติม" rows={3} style={{ width: '100%', padding: '0.5rem', border: '1px solid #e5e7eb', borderRadius: '6px', resize: 'vertical' }} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                  <button onClick={handleSaveDiagnosis} className="btn-primary"><Save size={16} /> บันทึก</button>
+                  <button onClick={() => setEditingDiagnosis(null)} className="btn-secondary"><X size={16} /> ยกเลิก</button>
+                </div>
+              </div>
+            )}
+
+            {diagnoses.length === 0 ? (
+              <div className="empty-state">
+                <FileText size={48} color="#cbd5e1" />
+                <p>ยังไม่มีการวินิจฉัย</p>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '1rem' }}>
+                {diagnoses.map((diagnosis, idx) => {
+                  const key = diagnosis?.diagnosis_id || `${diagnosis?.patient_id || 'PAT'}-${diagnosis?.doctor_id || 'DOC'}-${diagnosis?.diagnosis_date || 'DATE'}-${idx}`;
+                  const formatThaiDate = (value) => {
+                    if (!value) return '-';
+                    const d = new Date(value);
+                    return Number.isNaN(d.getTime()) ? '-' : d.toLocaleDateString('th-TH');
+                  };
+
+                  return (
+                    <div key={key} style={{ background: '#f9fafb', padding: '1.5rem', borderRadius: '12px', borderLeft: '4px solid #2563eb' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                        <h4 style={{ margin: 0 }}>{diagnosis?.glaucoma_type || '-'}</h4>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button onClick={() => handleEditDiagnosis(diagnosis)} style={{ padding: '0.5rem', background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <Edit2 size={16} color="#6b7280" />
+                          </button>
+                          <button onClick={() => handleDeleteDiagnosis(diagnosis?.diagnosis_id)} style={{ padding: '0.5rem', background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <Trash2 size={16} color="#dc2626" />
+                          </button>
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gap: '0.5rem', color: '#6b7280' }}>
+                        <p style={{ margin: 0 }}><strong>ความรุนแรง:</strong> {diagnosis?.severity || '-'}</p>
+                        <p style={{ margin: 0 }}>
+                          <strong>ตำแหน่ง:</strong>
+                          {diagnosis?.left_eye_affected && diagnosis?.right_eye_affected ? ' ทั้งสองข้าง' : diagnosis?.left_eye_affected ? ' ตาซ้าย' : diagnosis?.right_eye_affected ? ' ตาขวา' : ' -'}
+                        </p>
+                        {diagnosis?.icd_code && <p style={{ margin: 0 }}><strong>ICD Code:</strong> {diagnosis.icd_code}</p>}
+                        {(diagnosis?.target_iop_left != null || diagnosis?.target_iop_right != null) && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', margin: '0.25rem 0' }}>
+                            <strong style={{ color: '#0369a1' }}>Target IOP:</strong>
+                            {diagnosis.target_iop_left != null && (
+                              <span style={{ background: '#e0f2fe', border: '1px solid #7dd3fc', borderRadius: '20px', padding: '0.15rem 0.65rem', fontSize: '0.82rem', color: '#0369a1' }}>
+                                OS: <strong>{diagnosis.target_iop_left} mmHg</strong>
+                              </span>
+                            )}
+                            {diagnosis.target_iop_right != null && (
+                              <span style={{ background: '#e0f2fe', border: '1px solid #7dd3fc', borderRadius: '20px', padding: '0.15rem 0.65rem', fontSize: '0.82rem', color: '#0369a1' }}>
+                                OD: <strong>{diagnosis.target_iop_right} mmHg</strong>
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {diagnosis?.notes && <p style={{ margin: 0 }}><strong>หมายเหตุ:</strong> {diagnosis.notes}</p>}
+                        <p style={{ margin: '0.5rem 0 0 0', paddingTop: '0.5rem', borderTop: '1px solid #e5e7eb', fontSize: '0.875rem' }}>
+                          วันที่วินิจฉัย: {formatThaiDate(diagnosis?.diagnosis_date)}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ===== TREATMENT TAB ===== */}
+        {activeTab === 'treatment' && (
+          <div className="treatment-tab">
+            <div className="section-header">
+              <h3>ยาที่ใช้อยู่ปัจจุบัน</h3>
+              <button className="btn-primary" onClick={() => navigate(`/patients/${patientId}/prescribe`)}>
+                <Pill size={18} /> สั่งยาใหม่
+              </button>
+            </div>
+
+            {medications.length === 0 ? (
+              <div className="empty-state">
+                <Pill size={48} color="#cbd5e1" />
+                <p>ยังไม่มีการรักษา</p>
+                <button className="btn-primary" onClick={() => navigate(`/patients/${patientId}/prescribe`)}>สั่งยาใหม่</button>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '1rem' }}>
+                {medications.map((med) => {
+                  const medName = med.medication?.name || 'ไม่ระบุชื่อยา';
+                  const genericName = med.medication?.generic_name;
+                  const startDate = med.prescribed_date || med.reminders?.[0]?.start_date;
+                  const instructions = med.special_instructions;
+
+                  return (
+                    <div key={med.prescription_id} style={{ background: '#f9fafb', padding: '1.5rem', borderRadius: '12px', borderLeft: '4px solid #2563eb' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+                        <div>
+                          <h4 style={{ margin: '0 0 0.25rem 0' }}>{medName}</h4>
+                          {genericName && <p style={{ margin: 0, fontSize: '0.875rem', color: '#6b7280' }}>{genericName}</p>}
+                        </div>
+                        <span style={{ padding: '0.25rem 0.75rem', background: '#dbeafe', color: '#2563eb', borderRadius: '6px', fontSize: '0.875rem', fontWeight: 600 }}>
+                          {med.status === 'active' ? 'ใช้งาน' : med.status}
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gap: '0.75rem', marginBottom: '1rem', color: '#6b7280' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <Eye size={16} />
+                          <span>ตำแหน่ง: {med.eye === 'both' ? 'ทั้งสองข้าง' : med.eye === 'left' ? 'ตาซ้าย' : med.eye === 'right' ? 'ตาขวา' : 'ไม่ระบุ'}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <Activity size={16} />
+                          <span>ความถี่: {med.frequency || 'ไม่ระบุ'}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <Calendar size={16} />
+                          <span>เริ่ม: {startDate ? new Date(startDate).toLocaleDateString('th-TH') : '-'}</span>
+                        </div>
+                        {instructions && (
+                          <div style={{ background: 'white', padding: '0.75rem', borderRadius: '6px', marginTop: '0.5rem' }}>
+                            <strong style={{ color: '#374151' }}>คำแนะนำ:</strong> {instructions}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '1rem', borderTop: '1px solid #e5e7eb' }}>
+                        <button
+                          onClick={() => handleDiscontinueMedication(med.prescription_id, medName)}
+                          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: 'white', border: '2px solid #dc2626', color: '#dc2626', borderRadius: '6px', fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s' }}
+                        >
+                          <X size={16} /> หยุดยา
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ===== COMPLIANCE TAB ===== */}
+        {activeTab === 'compliance' && (
+          <MedicationComplianceTab patientId={patientId} />
+        )}
+
+        {/* ===== ✅ IOP TREND TAB ===== */}
+        {activeTab === 'iop' && (
+          <IOPTrendChart patientId={patientId} />
+        )}
+
+        {/* ===== RECORDS TAB ===== */}
+        {activeTab === 'records' && (
+          <div className="records-tab">
+            {/* IOP Records */}
+            <div style={{ marginBottom: '3rem' }}>
+              <div className="section-header">
+                <h3>ประวัติการวัดความดันตา (IOP)</h3>
+                <button className="btn-record iop" onClick={openIOPModal}>
+                  <Activity size={18} /> บันทึก IOP
+                </button>
+              </div>
+
+              {iopRecords.length === 0 ? (
+                <div className="empty-state">ยังไม่มีบันทึก</div>
+              ) : (
+                <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead style={{ background: '#f9fafb' }}>
+                      <tr>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600, borderBottom: '2px solid #e5e7eb' }}>วันที่</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600, borderBottom: '2px solid #e5e7eb' }}>เวลา</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600, borderBottom: '2px solid #e5e7eb' }}>ตาซ้าย (mmHg)</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600, borderBottom: '2px solid #e5e7eb' }}>ตาขวา (mmHg)</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600, borderBottom: '2px solid #e5e7eb' }}>อุปกรณ์</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {iopRecords.map((record) => (
+                        <tr key={record.measurement_id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                          <td style={{ padding: '1rem', color: '#6b7280' }}>{new Date(record.measurement_date).toLocaleDateString('th-TH')}</td>
+                          <td style={{ padding: '1rem', color: '#6b7280' }}>{record.measurement_time || '-'}</td>
+                          <td style={{ padding: '1rem', color: '#6b7280' }}>{record.left_eye_iop || '-'}</td>
+                          <td style={{ padding: '1rem', color: '#6b7280' }}>{record.right_eye_iop || '-'}</td>
+                          <td style={{ padding: '1rem', color: '#6b7280' }}>{record.measurement_device || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {showIOPModal && (
+                <div className="modal-overlay">
+                  <div className="modal-card">
+                    <h3>บันทึกค่าความดันตา (IOP)</h3>
+                    <div className="modal-grid">
+                      <div>
+                        <label>ตาซ้าย (mmHg)</label>
+                        <input type="number" value={iopForm.left_eye_iop} onChange={(e) => setIopForm({ ...iopForm, left_eye_iop: e.target.value })} />
+                      </div>
+                      <div>
+                        <label>ตาขวา (mmHg)</label>
+                        <input type="number" value={iopForm.right_eye_iop} onChange={(e) => setIopForm({ ...iopForm, right_eye_iop: e.target.value })} />
+                      </div>
+                      <div>
+                        <label>อุปกรณ์</label>
+                        <select value={iopForm.measurement_device} onChange={(e) => setIopForm({ ...iopForm, measurement_device: e.target.value })}>
+                          <option value="GAT">GAT</option>
+                          <option value="NCT">NCT</option>
+                          <option value="Tono-Pen">Tono-Pen</option>
+                        </select>
+                      </div>
+                      <div style={{ gridColumn: '1 / -1' }}>
+                        <label>หมายเหตุ</label>
+                        <textarea value={iopForm.notes} onChange={(e) => setIopForm({ ...iopForm, notes: e.target.value })} />
+                      </div>
+                    </div>
+                    <div className="modal-actions">
+                      <button onClick={closeIOPModal} style={{padding:'0.6rem 1.25rem',background:'#f3f4f6',color:'#6b7280',border:'none',borderRadius:'8px',fontSize:'0.9rem',fontWeight:600,cursor:'pointer'}}>ยกเลิก</button>
+                      <button onClick={handleSaveIOP} style={{padding:'0.6rem 1.5rem',background:'#2563eb',color:'white',border:'none',borderRadius:'8px',fontSize:'0.9rem',fontWeight:600,cursor:'pointer'}} disabled={savingIOP}>{savingIOP ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Visual Field Records */}
+            <div>
+              <div className="section-header">
+                <h3>ประวัติลานสายตา (Visual Field)</h3>
+                <button className="btn-record vf" onClick={openVFModal}>
+                  <Eye size={18} /> บันทึก Visual Field
+                </button>
+              </div>
+
+              {vfRecords.length === 0 ? (
+                <div className="empty-state">ยังไม่มีบันทึก</div>
+              ) : (
+                <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead style={{ background: '#f9fafb' }}>
+                      <tr>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600, borderBottom: '2px solid #e5e7eb' }}>วันที่</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600, borderBottom: '2px solid #e5e7eb' }}>ตาที่ตรวจ</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600, borderBottom: '2px solid #e5e7eb' }}>MD (dB)</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600, borderBottom: '2px solid #e5e7eb' }}>PSD (dB)</th>
+                        <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 600, borderBottom: '2px solid #e5e7eb' }}>VFI (%)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {vfRecords.map((record) => {
+                        const hasLeft = record.left_eye != null;
+                        const hasRight = record.right_eye != null;
+                        const eyeText = hasLeft && hasRight ? 'ทั้งสองข้าง' : hasLeft ? 'ตาซ้าย' : hasRight ? 'ตาขวา' : '-';
+                        const mdText = hasLeft && hasRight ? `${record.left_eye?.md ?? '-'} / ${record.right_eye?.md ?? '-'}` : hasLeft ? (record.left_eye?.md ?? '-') : hasRight ? (record.right_eye?.md ?? '-') : '-';
+                        const psdText = hasLeft && hasRight ? `${record.left_eye?.psd ?? '-'} / ${record.right_eye?.psd ?? '-'}` : hasLeft ? (record.left_eye?.psd ?? '-') : hasRight ? (record.right_eye?.psd ?? '-') : '-';
+                        const vfiText = hasLeft && hasRight ? `${record.left_eye?.vfi ?? '-'} / ${record.right_eye?.vfi ?? '-'}` : hasLeft ? (record.left_eye?.vfi ?? '-') : hasRight ? (record.right_eye?.vfi ?? '-') : '-';
+
+                        return (
+                          <tr key={record.test_id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                            <td style={{ padding: '1rem', color: '#6b7280' }}>{new Date(record.test_date).toLocaleDateString('th-TH')}</td>
+                            <td style={{ padding: '1rem', color: '#6b7280' }}>{eyeText}</td>
+                            <td style={{ padding: '1rem', color: '#6b7280' }}>{mdText}</td>
+                            <td style={{ padding: '1rem', color: '#6b7280' }}>{psdText}</td>
+                            <td style={{ padding: '1rem', color: '#6b7280' }}>{vfiText}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {showVFModal && (
+                <div className="modal-overlay">
+                  <div className="modal-card">
+                    <h3>บันทึกผล Visual Field</h3>
+                    <div className="modal-grid">
+                      <div><label>วันที่ตรวจ</label><input type="date" value={vfForm.test_date} onChange={(e) => setVfForm({ ...vfForm, test_date: e.target.value })} /></div>
+                      <div>
+                        <label>ตาที่ตรวจ</label>
+                        <select value={vfForm.eye} onChange={(e) => setVfForm({ ...vfForm, eye: e.target.value })}>
+                          <option value="both">ทั้งสองข้าง</option>
+                          <option value="left">ตาซ้าย</option>
+                          <option value="right">ตาขวา</option>
+                        </select>
+                      </div>
+                      <div><label>MD ตาซ้าย (dB)</label><input type="number" step="0.1" value={vfForm.left_eye_md} onChange={(e) => setVfForm({ ...vfForm, left_eye_md: e.target.value })} /></div>
+                      <div><label>MD ตาขวา (dB)</label><input type="number" step="0.1" value={vfForm.right_eye_md} onChange={(e) => setVfForm({ ...vfForm, right_eye_md: e.target.value })} /></div>
+                      <div><label>PSD ตาซ้าย (dB)</label><input type="number" step="0.1" value={vfForm.left_eye_psd} onChange={(e) => setVfForm({ ...vfForm, left_eye_psd: e.target.value })} /></div>
+                      <div><label>PSD ตาขวา (dB)</label><input type="number" step="0.1" value={vfForm.right_eye_psd} onChange={(e) => setVfForm({ ...vfForm, right_eye_psd: e.target.value })} /></div>
+                      <div><label>VFI ตาซ้าย (%)</label><input type="number" step="0.1" value={vfForm.left_eye_vfi} onChange={(e) => setVfForm({ ...vfForm, left_eye_vfi: e.target.value })} /></div>
+                      <div><label>VFI ตาขวา (%)</label><input type="number" step="0.1" value={vfForm.right_eye_vfi} onChange={(e) => setVfForm({ ...vfForm, right_eye_vfi: e.target.value })} /></div>
+                      <div style={{ gridColumn: '1 / -1' }}><label>Strategy</label><input type="text" value={vfForm.test_strategy} onChange={(e) => setVfForm({ ...vfForm, test_strategy: e.target.value })} /></div>
+                      <div style={{ gridColumn: '1 / -1' }}><label>หมายเหตุ</label><textarea value={vfForm.notes} onChange={(e) => setVfForm({ ...vfForm, notes: e.target.value })} /></div>
+                    </div>
+                    <div className="modal-actions">
+                      <button onClick={closeVFModal} style={{padding:'0.6rem 1.25rem',background:'#f3f4f6',color:'#6b7280',border:'none',borderRadius:'8px',fontSize:'0.9rem',fontWeight:600,cursor:'pointer'}}>ยกเลิก</button>
+                      <button onClick={handleSaveVF} style={{padding:'0.6rem 1.5rem',background:'#2563eb',color:'white',border:'none',borderRadius:'8px',fontSize:'0.9rem',fontWeight:600,cursor:'pointer'}} disabled={savingVF}>{savingVF ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}
