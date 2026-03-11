@@ -1,3 +1,4 @@
+//ก่อนใส่CORS domain ของ Vercel 
 // server.js
 const express = require('express');
 const cors = require('cors');
