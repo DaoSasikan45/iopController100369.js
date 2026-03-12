@@ -1,0 +1,189 @@
+import { useState, useEffect } from 'react';
+import { iopService } from '../services/api';
+import { useParams } from 'react-router-dom';
+
+function IOPForm({ patientId: propPatientId, onSuccess }) {
+  const { patientId: urlPatientId } = useParams();
+  const patientId = propPatientId || urlPatientId;
+
+  const [formData, setFormData] = useState({
+    patient_id: patientId || '',
+    left_eye_iop: '',
+    right_eye_iop: '',
+    measurement_device: 'GAT',
+    notes: ''
+  });
+
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    if (patientId) {
+      setFormData(prev => ({ ...prev, patient_id: patientId }));
+    }
+  }, [patientId, setFormData]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setMessage('กำลังบันทึก...');
+
+    try {
+      const result = await iopService.recordIOP({
+        patient_id: formData.patient_id,
+        left_eye_iop: formData.left_eye_iop ? parseFloat(formData.left_eye_iop) : undefined,
+        right_eye_iop: formData.right_eye_iop ? parseFloat(formData.right_eye_iop) : undefined,
+        measurement_device: formData.measurement_device,
+        notes: formData.notes
+      });
+
+      if (result.success) {
+        setMessage('✅ บันทึกสำเร็จ!');
+        setFormData({
+          patient_id: patientId || '',
+          left_eye_iop: '',
+          right_eye_iop: '',
+          measurement_device: 'GAT',
+          notes: ''
+        });
+        
+        if (onSuccess) {
+          setTimeout(() => onSuccess(), 1500);
+        }
+      } else {
+        setMessage('❌ เกิดข้อผิดพลาด: ' + result.message);
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      setMessage('❌ ไม่สามารถบันทึกข้อมูลได้: ' + (error.response?.data?.message || error.message));
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: '600px', margin: '50px auto', padding: '20px', border: '1px solid #ccc', borderRadius: '8px' }}>
+      <h2>บันทึกค่า IOP</h2>
+      
+      {message && (
+        <div style={{ 
+          padding: '10px', 
+          marginBottom: '20px', 
+          backgroundColor: message.includes('✅') ? '#d4edda' : '#f8d7da',
+          color: message.includes('✅') ? '#155724' : '#721c24',
+          borderRadius: '4px'
+        }}>
+          {message}
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit}>
+        <div style={{ marginBottom: '15px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+            Patient ID (HN): *
+          </label>
+          <input
+            type="text"
+            value={formData.patient_id}
+            onChange={(e) => setFormData({...formData, patient_id: e.target.value})}
+            required
+            readOnly={!!patientId}
+            placeholder="เช่น PAT0001"
+            style={{ 
+              width: '100%', 
+              padding: '8px', 
+              fontSize: '14px', 
+              border: '1px solid #ccc', 
+              borderRadius: '4px',
+              backgroundColor: patientId ? '#f0f0f0' : 'white'
+            }}
+          />
+          {patientId && (
+            <small style={{ color: '#28a745' }}>✅ ดึงจากข้อมูลผู้ป่วยอัตโนมัติ</small>
+          )}
+        </div>
+
+        <div style={{ marginBottom: '15px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+            IOP ตาซ้าย (OS) - mmHg:
+          </label>
+          <input
+            type="number"
+            step="0.1"
+            min="5"
+            max="60"
+            value={formData.left_eye_iop}
+            onChange={(e) => setFormData({...formData, left_eye_iop: e.target.value})}
+            placeholder="เช่น 18.5"
+            style={{ width: '100%', padding: '8px', fontSize: '14px', border: '1px solid #ccc', borderRadius: '4px' }}
+          />
+          <small style={{ color: '#666' }}>ค่าระหว่าง 5-60 mmHg</small>
+        </div>
+
+        <div style={{ marginBottom: '15px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+            IOP ตาขวา (OD) - mmHg:
+          </label>
+          <input
+            type="number"
+            step="0.1"
+            min="5"
+            max="60"
+            value={formData.right_eye_iop}
+            onChange={(e) => setFormData({...formData, right_eye_iop: e.target.value})}
+            placeholder="เช่น 20.0"
+            style={{ width: '100%', padding: '8px', fontSize: '14px', border: '1px solid #ccc', borderRadius: '4px' }}
+          />
+          <small style={{ color: '#666' }}>ค่าระหว่าง 5-60 mmHg (ต้องใส่อย่างน้อย 1 ตา)</small>
+        </div>
+
+        <div style={{ marginBottom: '15px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+            อุปกรณ์วัด:
+          </label>
+          <select
+            value={formData.measurement_device}
+            onChange={(e) => setFormData({...formData, measurement_device: e.target.value})}
+            style={{ width: '100%', padding: '8px', fontSize: '14px', border: '1px solid #ccc', borderRadius: '4px' }}
+          >
+            <option value="GAT">GAT (Goldmann Applanation Tonometry)</option>
+            <option value="NCT">NCT (Non-Contact Tonometry)</option>
+            <option value="iCare">iCare</option>
+            <option value="Tono-Pen">Tono-Pen</option>
+            <option value="Other">อื่นๆ</option>
+          </select>
+        </div>
+
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+            หมายเหตุ:
+          </label>
+          <textarea
+            value={formData.notes}
+            onChange={(e) => setFormData({...formData, notes: e.target.value})}
+            maxLength={500}
+            rows={3}
+            placeholder="เพิ่มหมายเหตุ (ถ้ามี)"
+            style={{ width: '100%', padding: '8px', fontSize: '14px', border: '1px solid #ccc', borderRadius: '4px' }}
+          />
+          <small style={{ color: '#666' }}>{formData.notes.length}/500 ตัวอักษร</small>
+        </div>
+
+        <button 
+          type="submit"
+          style={{ 
+            width: '100%', 
+            padding: '12px', 
+            backgroundColor: '#007bff', 
+            color: 'white', 
+            border: 'none', 
+            borderRadius: '4px', 
+            fontSize: '16px',
+            cursor: 'pointer',
+            fontWeight: 'bold'
+          }}
+        >
+          💾 บันทึกข้อมูล IOP
+        </button>
+      </form>
+    </div>
+  );
+}
+
+export default IOPForm;
